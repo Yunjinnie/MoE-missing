@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=mosi                 # Submit a job named "example"
+#SBATCH --job-name=disentangled                 # Submit a job named "example"
 #SBATCH --nodes=1                             # Using 1 node
 #SBATCH --gres=gpu:1                          # Using 1 gpu
 #SBATCH --time=0-12:00:00                     # 12 hour timelimit

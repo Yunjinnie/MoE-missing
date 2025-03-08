@@ -67,7 +67,6 @@ class Custom3DCNN(nn.Module):
         x = F.relu(self.conv6(x))
         x = self.dropout3(self.pool3(x))
 
-
         x = x.view(x.size(0), -1)  # Flatten the output
         x = self.fc(x)  # Apply the fully connected layer
         
@@ -183,7 +182,6 @@ class FusionLayer(nn.Module):
                         g_loss.append(i_loss)
         return sum(g_loss)
 
-
 class PatchEmbeddings(nn.Module):
     """
     Image to Patch Embedding.
@@ -204,84 +202,6 @@ class PatchEmbeddings(nn.Module):
         # x = F.normalize(x, dim=-1)
         x = self.projection(x)
         return x
-
-class GRU(nn.Module):
-    def __init__(self, input_size, hidden_size, dropout=False, has_padding=False, batch_first=True, last_only=True):
-        super(GRU, self).__init__()
-        self.hidden_size = hidden_size
-        self.last_only = last_only
-        self.batch_first = batch_first
-        self.has_padding = has_padding
-        self.gru = nn.GRU(
-            input_size=input_size, 
-            hidden_size=hidden_size, 
-            batch_first=batch_first, 
-            bidirectional=False
-        )
-        self.dropout_layer = nn.Dropout(0.5) if dropout else nn.Identity()
-
-    def forward(self, x):
-        # GRU forward pass
-        output, _ = self.gru(x)
-        if self.last_only:
-            # Use only the last output for each sequence
-            if self.batch_first:
-                output = output[:, -1, :]
-            else:
-                output = output[-1, :, :]
-        output = self.dropout_layer(output)
-        return output
-
-class VGG11Slim(nn.Module):
-    def __init__(self, out_channels, dropout=False, dropoutp=0.2, freeze_features=True):
-        super(VGG11Slim, self).__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2)
-        )
-
-        if freeze_features:
-            for param in self.features.parameters():
-                param.requires_grad = False
-
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(512 * 1 * 1, 4096),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropoutp),
-            nn.Linear(4096, out_channels),
-            nn.ReLU(inplace=True)
-        )
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.classifier(x)
-        return x
-
-
 
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, 
@@ -393,4 +313,80 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
 
+        return x
+
+class GRU(nn.Module):
+    def __init__(self, input_size, hidden_size, dropout=False, has_padding=False, batch_first=True, last_only=True):
+        super(GRU, self).__init__()
+        self.hidden_size = hidden_size
+        self.last_only = last_only
+        self.batch_first = batch_first
+        self.has_padding = has_padding
+        self.gru = nn.GRU(
+            input_size=input_size, 
+            hidden_size=hidden_size, 
+            batch_first=batch_first, 
+            bidirectional=False
+        )
+        self.dropout_layer = nn.Dropout(0.5) if dropout else nn.Identity()
+
+    def forward(self, x):
+        # GRU forward pass
+        output, _ = self.gru(x)
+        if self.last_only:
+            # Use only the last output for each sequence
+            if self.batch_first:
+                output = output[:, -1, :]
+            else:
+                output = output[-1, :, :]
+        output = self.dropout_layer(output)
+        return output
+
+class VGG11Slim(nn.Module):
+    def __init__(self, out_channels, dropout=False, dropoutp=0.2, freeze_features=True):
+        super(VGG11Slim, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+
+            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+
+        if freeze_features:
+            for param in self.features.parameters():
+                param.requires_grad = False
+
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(512 * 1 * 1, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropoutp),
+            nn.Linear(4096, out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
         return x

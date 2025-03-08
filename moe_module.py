@@ -13,7 +13,7 @@ from fmoe.layers import FMoE, _fmoe_general_global_forward, mark_module_parallel
 from fmoe.functions import ensure_comm, Slice, AllGather
 from fmoe.gates import NaiveGate
 
-import tree
+import Tree as tree
 
 from fmoe.gates import NoisyGate
 
@@ -182,7 +182,7 @@ class FMoETransformerMLP(FixedFMoE):
         inp = inp.reshape(-1, self.d_model)
         
         output = super().forward(inp, expert_indices=expert_indices)
-        
+
         return output.reshape(original_shape)
 
 
@@ -192,7 +192,7 @@ class AddtionalNoisyGate(NoisyGate):
         self.topk_logits = []
         self.indicates = None
         self.is_full_modality = False
-    
+
     def set_topk_logit(self, logit):
         self.topk_logits.append(logit)
     
@@ -223,7 +223,8 @@ class AddtionalNoisyGate(NoisyGate):
         
         # Add noise to logits
         raw_noise_stddev = inp @ self.w_noise
-        noise_stddev = (self.softplus(raw_noise_stddev) + self.noise_epsilon) * self.training
+        noise_stddev = (
+            self.softplus(raw_noise_stddev) + self.noise_epsilon) * self.training
         noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
 
         logits = noisy_logits
@@ -237,7 +238,8 @@ class AddtionalNoisyGate(NoisyGate):
             logits = mask  # Apply the mask to logits
 
         # Calculate topk + 1 that will be needed for the noisy gates
-        top_logits, top_indices = logits.topk(min(self.top_k + 1, self.tot_expert), dim=1)
+        top_logits, top_indices = logits.topk(
+            min(self.top_k + 1, self.tot_expert), dim=1)
         top_k_logits = top_logits[:, :self.top_k]
         top_k_indices = top_indices[:, :self.top_k]
         top_k_gates = self.softmax(top_k_logits)
@@ -251,7 +253,9 @@ class AddtionalNoisyGate(NoisyGate):
 
         # Load balance calculation (optional depending on your MoE setup)
         if self.top_k < self.tot_expert and self.training:
-            load = self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits)
+            load = (self._prob_in_top_k(
+                clean_logits, noisy_logits, noise_stddev, top_logits)
+            )
         else:
             load = self._gates_to_load(gates)
 

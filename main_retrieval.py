@@ -6,7 +6,7 @@ import random
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from copy import deepcopy
 from tqdm import trange
-from model_modified import MoE_Disentangled, FusionLayer
+from models import MoE_Retriever, FusionLayer
 from utils import seed_everything, setup_logger
 from data import load_and_preprocess_data, load_and_preprocess_data_mimic, create_loaders, process_2d_to_3d
 from dataset import load_and_preprocess_data_mosi, load_and_preprocess_data_enrico
@@ -28,10 +28,10 @@ def str2bool(s):
 
 # Parse input arguments
 def parse_args():
-    parser = argparse.ArgumentParser(description='MoE-Disentangled-Re')
+    parser = argparse.ArgumentParser(description='MoE-Retriever')
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--data', type=str, default='mosi') # adni
-    parser.add_argument('--modality', type=str, default='AVT') # I G C B for ADNI, L N C for MIMIC
+    parser.add_argument('--modality', type=str, default='T') # I G C B for ADNI, L N C for MIMIC
     parser.add_argument('--num_candidates', type=int, default=10) # Number of candidates in each modality bank
     parser.add_argument('--num_candidates_shared', type=int, default=2) # Number of candidates in each modality bank
     parser.add_argument('--num_supporting_samples', type=int, default=4) # Number of supporting samples
@@ -57,7 +57,6 @@ def parse_args():
     parser.add_argument('--top_k', type=int, default=2) # 4 for adni 3 for mimic # Number of k
     parser.add_argument('--dropout', type=float, default=0.5) # Dropout rates
     parser.add_argument('--gate_loss_weight', type=float, default=1e-2)
-    parser.add_argument('--load_model', type=str2bool, default=False)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--n_runs', type=int, default=1)
     parser.add_argument('--save', type=str2bool, default=False) # Use common ids across modalities
@@ -77,75 +76,13 @@ def get_supporting_group(missing_modality=None, observed_modalities=None, mc_idx
 
     return random.sample(idx_pool, num_samples)
 
-def run_epoch(args, loader, encoder_dict, modality_dict, missing_embeds, fusion_model, criterion, device, is_training=False, optimizer=None, gate_loss_weight=0.0):
-    all_preds = []
-    all_labels = []
-    all_probs = []
-    task_losses = []
-    gate_losses = []
-    
-    if is_training:
-        fusion_model.train()
-        for encoder in encoder_dict.values():
-            encoder.train()
-    else:
-        fusion_model.eval()
-        for encoder in encoder_dict.values():
-            encoder.eval()
-
-    for batch_samples, batch_labels, batch_mcs, batch_observed in loader:
-        batch_samples = {k: v.to(device, non_blocking=True) for k, v in batch_samples.items()}
-        batch_labels = batch_labels.to(device, non_blocking=True)
-        batch_mcs = batch_mcs.to(device, non_blocking=True)
-        batch_observed = batch_observed.to(device, non_blocking=True)
-        
-        fusion_input = []
-        for i, (modality, samples) in enumerate(batch_samples.items()):
-            mask = batch_observed[:, modality_dict[modality]]
-            encoded_samples = torch.zeros((samples.shape[0], args.num_patches, args.hidden_dim)).to(device)
-            if mask.sum() > 0:
-                encoded_samples[mask] = encoder_dict[modality](samples[mask])
-            if (~mask).sum() > 0:
-                encoded_samples[~mask] = missing_embeds[batch_mcs[~mask], modality_dict[modality]]
-            fusion_input.append(encoded_samples)
-
-        outputs = fusion_model(*fusion_input, expert_indices=batch_mcs)
-
-        if is_training:
-            optimizer.zero_grad()
-            task_loss = criterion(outputs, batch_labels)
-            task_losses.append(task_loss.item())
-            gate_loss = fusion_model.gate_loss()
-            gate_losses.append(float(gate_loss))
-            loss = task_loss + gate_loss_weight * gate_loss
-            loss.backward()
-            optimizer.step()
-            
-        else:
-            _, preds = torch.max(outputs, 1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(batch_labels.cpu().numpy())
-            
-            #all_probs.extend(torch.nn.functional.softmax(outputs, dim=1).detach().cpu().numpy())
-            if args.data == 'adni':
-                all_probs.extend(torch.nn.functional.softmax(outputs, dim=1).detach().cpu().numpy())
-            else:
-                all_probs.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].detach().cpu().numpy())                        
-            
-
-    if is_training:
-        return task_losses, gate_losses
-    else:
-        return all_preds, all_labels, all_probs
-
-
-def train_and_evaluate(args, seed, save_path=None):
+def train_and_evaluate(args, seed):
     wandb.init(
-        name = "modified-T", ## Wandb creates random run names if you skip this field
+        name = "default-T", ## Wandb creates random run names if you skip this field
         reinit = True, ### Allows reinitalizing runs when you re-run this cell
         # run_id = ### Insert specific run id here if you want to resume a previous run
         # resume = "must" ### You need this to resume previous runs, but comment out reinit = True when using this
-        project = "MoE-Disentangled", ### Project should be created in your wandb account
+        project = "MoE-Retrieval", ### Project should be created in your wandb account
         config = args
         # {
         #     'epochs': args.train_epochs,
@@ -173,13 +110,9 @@ def train_and_evaluate(args, seed, save_path=None):
         print(f"Batch size: {batch_samples[list(batch_samples.keys())[0]].shape[0]}")
 
 
-    retriever_model = MoE_Disentangled(num_modalities, args.num_patches, args.hidden_dim, num_experts_retriever, args.num_routers, args.top_k, args.num_heads, args.dropout).to(device)
+    retriever_model = MoE_Retriever(num_modalities, args.num_patches, args.hidden_dim, num_experts_retriever, args.num_routers, args.top_k, args.num_heads, args.dropout).to(device)
     fusion_model = FusionLayer(num_modalities, args.num_patches, args.hidden_dim, n_labels, args.num_layers_fus, args.num_layers_pred, args.num_experts, args.num_routers, args.top_k, args.num_heads, args.dropout, args.fusion_sparse).to(device)
-    params = list(fusion_model.parameters()) + [param for encoder in encoder_dict.values() for param in encoder.parameters()]
-    # if num_modalities >= 1:
-    #     missing_embeds = torch.nn.Parameter(torch.randn((2**num_modalities)-1, args.n_full_modalities, args.num_patches, args.hidden_dim, dtype=torch.float, device=device), requires_grad=True)
-    #     params += [missing_embeds]
-
+    params = list(fusion_model.parameters()) + [param for encoder in encoder_dict.values() for param in encoder.parameters()]    
     optimizer = torch.optim.Adam(params, lr=args.lr)
     #criterion = torch.nn.CrossEntropyLoss() if args.data == 'adni' else torch.nn.CrossEntropyLoss(torch.tensor([0.25, 0.75]).to(device))
     criterion = torch.nn.CrossEntropyLoss(torch.tensor([0.25, 0.75]).to(device)) if args.data == 'mimic' else torch.nn.CrossEntropyLoss()
@@ -212,11 +145,11 @@ def train_and_evaluate(args, seed, save_path=None):
 
     for epoch in trange(args.train_epochs):
         if epoch < args.warm_up_epochs:
-            moe_disentangled=False
+            moe_retriever=False
             fusion_model.train()
 
         else:
-            moe_disentangled=True
+            moe_retriever=True
             if epoch == args.warm_up_epochs:
                 optimizer.add_param_group({'params': retriever_model.parameters()})  # Add new parameters to existing optimizer
             fusion_model.train()
@@ -236,19 +169,17 @@ def train_and_evaluate(args, seed, save_path=None):
             optimizer.zero_grad()
             
             fusion_input = []
-            for modality, samples in batch_samples.items():
+            for i, (modality, samples) in enumerate(batch_samples.items()):
                 mask = batch_observed[:, modality_dict[modality]]
                 encoded_samples = torch.zeros((samples.shape[0], args.num_patches, args.hidden_dim)).to(device)
-                
                 if mask.sum() > 0:
                     encoded_samples[mask] = encoder_dict[modality](samples[mask])
-                    
-                if moe_disentangled:
-                    missing_sample_indices = (~mask).nonzero(as_tuple=False).flatten().cpu().numpy()
+                if moe_retriever:
+                    missing_sample_indices = (~mask).nonzero().flatten().cpu().numpy()
                     if len(missing_sample_indices) > 0:
                         ### MoE-Retriever ###
-                        for missing_idx in missing_sample_indices:
-                            mc_num = batch_mcs[missing_idx].item()
+                        for missing_sample_idx in missing_sample_indices:
+                            mc_num = batch_mcs[missing_sample_idx].item()
                             observed_modalities_char = num_mc_dict[mc_num]
                             observed_modalities = [char_to_modality[char] for char in observed_modalities_char]
 
@@ -258,21 +189,12 @@ def train_and_evaluate(args, seed, save_path=None):
                             input_tensor = torch.tensor(input_arr, dtype=torch.float32).to(device)
                             
                             intra_embeds = encoder_dict[modality](input_tensor)
-                            B_intra, N_intra, D = intra_embeds.shape
-                            intra_embeds = intra_embeds.view(1, B_intra * N_intra, D)
+                            inter_embeds = [encoder_dict[observed_modality](batch_samples[observed_modality][missing_sample_idx].unsqueeze(0)) for observed_modality in observed_modalities]
+                            moe_retriever_input = torch.cat([intra_embeds, torch.cat(inter_embeds)])
                             
-                            inter_embeds = []
-                            for obs_mod in observed_modalities:
-                                emb = encoder_dict[obs_mod](batch_samples[obs_mod][missing_idx].unsqueeze(0))
-                                inter_embeds.append(emb)
-                            moe_disentangled_input = torch.cat([intra_embeds] + inter_embeds, dim=1)
-                            
-                            num_intra = B_intra * N_intra
-                            num_inter = len(inter_embeds)
-                            
-                            expert_features, confidence, fused_features = retriever_model(moe_disentangled_input, expert_indices=8, num_intra = num_intra, num_inter=num_inter, inter_weight=0.5)
-                            fused_rep = fused_features.unsqueeze(1).repeat(1, args.num_patches, 1)
-                            encoded_samples[missing_idx] = fused_rep
+                            expert_idx_start = (args.modality).index(modality[0].upper())
+                            expert_indices = list(range(expert_idx_start*args.num_candidates, (expert_idx_start+1)*args.num_candidates)) + list(range(num_experts_retriever-args.num_candidates_shared, num_experts_retriever))
+                            encoded_samples[missing_sample_idx] = retriever_model(moe_retriever_input, expert_indices, num_intra=len(intra_embeds), num_inter=len(inter_embeds))
                 
                 #print(encoder_dict[modality])  # 모델 구조 확인
                 #print(samples[mask].shape)  # 입력 데이터 크기 확인
@@ -284,31 +206,15 @@ def train_and_evaluate(args, seed, save_path=None):
                 '''
 
                 fusion_input.append(encoded_samples)
-                #print(fusion_input)
+                print(fusion_input)
+            
 
             outputs =  fusion_model(*fusion_input)
-            
             #print("Batch labels:", batch_labels)
             #print("Unique labels:", batch_labels.unique())
-            ### print(outputs)
-            '''
-            (tensor([[ 0.0176],
-            [ 0.0199],
-            [-0.0089],
-            [ 0.0027],
-            [ 0.0267],
-            [ 0.0176],
-            [ 0.0260],
-            [ 0.0284]], device='cuda:0', grad_fn=<MulBackward0>), tensor([[-0.4449],
-            [-0.4257],
-            [-0.4228],
-            [-0.4244],
-            [-0.4159],
-            [-0.4358],
-            [-0.4387],
-            [-0.4279]], device='cuda:0', grad_fn=<LogBackward0>))
-            '''
-            task_loss = criterion(outputs, batch_labels) # outputs
+            #print(outputs)
+            
+            task_loss = criterion(outputs, batch_labels)
             task_losses.append(task_loss.item())
             gate_loss = fusion_model.gate_loss()
             gate_losses.append(float(gate_loss))
@@ -351,7 +257,7 @@ def train_and_evaluate(args, seed, save_path=None):
                         encoded_samples = torch.zeros((samples.shape[0], args.num_patches, args.hidden_dim)).to(device)
                         if mask.sum() > 0:
                             encoded_samples[mask] = encoder_dict[modality](samples[mask])
-                        if moe_disentangled:
+                        if moe_retriever:
                             missing_sample_indices = (~mask).nonzero().flatten().cpu().numpy()
                             if len(missing_sample_indices) > 0:
                                 ### MoE-Retriever ###
@@ -360,28 +266,18 @@ def train_and_evaluate(args, seed, save_path=None):
                                     observed_modalities_char = num_mc_dict[mc_num]
                                     observed_modalities = [char_to_modality[char] for char in observed_modalities_char]
                             
-                                    inter_modal_length = len(observed_modalities) # args.num_supporting_samples 
-                                    supporting_group_indices = get_supporting_group(missing_modality=modality[0].upper(), observed_modalities=observed_modalities_char, mc_idx_dict=mc_idx_dict_train, num_samples=inter_modal_length)
+                                    inter_modal_length = len(observed_modalities) # args.num_supporting_samples
+                                    supporting_group_indices = get_supporting_group(missing_modality=modality[0].upper(), observed_modalities=observed_modalities_char, mc_idx_dict=mc_idx_dict_valid, num_samples=inter_modal_length)
                                     input_arr = data_dict[modality][supporting_group_indices]
                                     input_tensor = torch.tensor(input_arr, dtype=torch.float32).to(device)
-                                    
                                     intra_embeds = encoder_dict[modality](input_tensor)
-                                    B_intra, N_intra, D = intra_embeds.shape
-                                    intra_embeds = intra_embeds.view(1, B_intra * N_intra, D)
-                            
-                                    inter_embeds = []
-                                    for obs_mod in observed_modalities:
-                                        emb = encoder_dict[obs_mod](batch_samples[obs_mod][missing_sample_idx].unsqueeze(0))
-                                        inter_embeds.append(emb)
-                                    moe_disentangled_input = torch.cat([intra_embeds] + inter_embeds, dim=1)
+                                    inter_embeds = [encoder_dict[observed_modality](batch_samples[observed_modality][missing_sample_idx].unsqueeze(0)) for observed_modality in observed_modalities]
+                                    moe_retriever_input = torch.cat([intra_embeds, torch.cat(inter_embeds)])
                                     
-                                    num_intra = B_intra * N_intra
-                                    num_inter = len(inter_embeds)
-
-                                    expert_features, confidence, fused_features = retriever_model(moe_disentangled_input, expert_indices=8, num_intra = num_intra, num_inter=num_inter, inter_weight=0.5)
-                                    fused_rep = fused_features.unsqueeze(1).repeat(1, args.num_patches, 1)
-                                    encoded_samples[missing_sample_idx] = fused_rep   
-                                                                 
+                                    expert_idx_start = (args.modality).index(modality[0].upper())
+                                    expert_indices = list(range(expert_idx_start*args.num_candidates, (expert_idx_start+1)*args.num_candidates)) + list(range(num_experts_retriever-args.num_candidates_shared, num_experts_retriever))
+                                    encoded_samples[missing_sample_idx] = retriever_model(moe_retriever_input, expert_indices, num_intra=len(intra_embeds), num_inter=len(inter_embeds))
+                                
                         fusion_input.append(encoded_samples)
 
                     outputs =  fusion_model(*fusion_input)
@@ -468,7 +364,7 @@ def train_and_evaluate(args, seed, save_path=None):
                 encoded_samples = torch.zeros((samples.shape[0], args.num_patches, args.hidden_dim)).to(device)
                 if mask.sum() > 0:
                     encoded_samples[mask] = encoder_dict[modality](samples[mask])
-                if moe_disentangled:
+                if moe_retriever:
                     missing_sample_indices = (~mask).nonzero().flatten().cpu().numpy()
                     if len(missing_sample_indices) > 0:
                         ### MoE-Retriever ###
@@ -477,28 +373,21 @@ def train_and_evaluate(args, seed, save_path=None):
                             observed_modalities_char = num_mc_dict[mc_num]
                             observed_modalities = [char_to_modality[char] for char in observed_modalities_char]
                             
-                            inter_modal_length = len(observed_modalities) # args.num_supporting_samples 
-                            supporting_group_indices = get_supporting_group(missing_modality=modality[0].upper(), observed_modalities=observed_modalities_char, mc_idx_dict=mc_idx_dict_train, num_samples=inter_modal_length)
+                            inter_modal_length = len(observed_modalities) # args.num_supporting_samples
+                            supporting_group_indices = get_supporting_group(missing_modality=modality[0].upper(), observed_modalities=observed_modalities_char, mc_idx_dict=mc_idx_dict_test, num_samples=inter_modal_length)
                             input_arr = data_dict[modality][supporting_group_indices]
+                            # if modality == 'image':
+                            #     input_arr = [process_2d_to_3d(data_dict[modality], idx, transforms=transforms['image'], masks=masks['image']) for idx in supporting_group_indices]
+                            #     input_arr = np.stack(input_arr)
                             input_tensor = torch.tensor(input_arr, dtype=torch.float32).to(device)
-                            
                             intra_embeds = encoder_dict[modality](input_tensor)
-                            B_intra, N_intra, D = intra_embeds.shape
-                            intra_embeds = intra_embeds.view(1, B_intra * N_intra, D)
+                            inter_embeds = [encoder_dict[observed_modality](batch_samples[observed_modality][missing_sample_idx].unsqueeze(0)) for observed_modality in observed_modalities]
+                            moe_retriever_input = torch.cat([intra_embeds, torch.cat(inter_embeds)])
                             
-                            inter_embeds = []
-                            for obs_mod in observed_modalities:
-                                emb = encoder_dict[obs_mod](batch_samples[obs_mod][missing_sample_idx].unsqueeze(0))
-                                inter_embeds.append(emb)
-                            moe_disentangled_input = torch.cat([intra_embeds] + inter_embeds, dim=1)
-                            
-                            num_intra = B_intra * N_intra
-                            num_inter = len(inter_embeds)
-                            
-                            expert_features, confidence, fused_features = retriever_model(moe_disentangled_input, expert_indices=8, num_intra = num_intra, num_inter=num_inter, inter_weight=0.5)
-                            fused_rep = fused_features.unsqueeze(1).repeat(1, args.num_patches, 1)
-                            encoded_samples[missing_sample_idx] = fused_rep
-                                                    
+                            expert_idx_start = (args.modality).index(modality[0].upper())
+                            expert_indices = list(range(expert_idx_start*args.num_candidates, (expert_idx_start+1)*args.num_candidates)) + list(range(num_experts_retriever-args.num_candidates_shared, num_experts_retriever))
+                            encoded_samples[missing_sample_idx] = retriever_model(moe_retriever_input, expert_indices, num_intra=len(intra_embeds), num_inter=len(inter_embeds))
+                        
                 fusion_input.append(encoded_samples)
 
             outputs =  fusion_model(*fusion_input)
@@ -540,7 +429,7 @@ def main():
     log_summary = "======================================================================================\n"
     
     model_kwargs = {
-        "model": 'MoE-Disentangled-Re',
+        "model": 'MoE-Retriever',
         "modality": args.modality,
         "initial_filling": args.initial_filling,
         "use_common_ids": args.use_common_ids,
@@ -571,11 +460,7 @@ def main():
     print('Modality:', args.modality)
 
     for seed in seeds:
-        if (not args.save) & (args.load_model):
-            save_path = f'./saves/seed_{seed}_modality_{args.modality}_train_epochs_{args.train_epochs}.pth'
-        else:
-            save_path = None
-        val_acc, val_f1, val_auc, test_acc, test_f1, test_auc = train_and_evaluate(args, seed, save_path=save_path)
+        val_acc, val_f1, val_auc, test_acc, test_f1, test_auc = train_and_evaluate(args, seed)
         val_accs.append(val_acc)
         val_f1s.append(val_f1)
         val_aucs.append(val_auc)
