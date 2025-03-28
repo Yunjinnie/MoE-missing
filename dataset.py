@@ -26,17 +26,33 @@ class MultiModalDataset(Dataset):
     def __init__(self, data_dict, observed_idx, ids, labels, input_dims, transforms, masks, use_common_ids=True):
         self.data_dict = data_dict
         self.mc = np.array(data_dict['modality_comb'])
-        self.observed = observed_idx
+        self.observed_idx = observed_idx
         self.ids = np.array(ids)
         self.labels = np.array(labels)
-        self.input_dims = input_dims
+        self.input_dims = input_dims # {'vision':20, 'audio':5, 'text':768}
         self.transforms = transforms
         self.masks = masks
         self.use_common_ids = use_common_ids
-        self.data = {modality: [data[i] for i in ids] for modality, data in self.data_dict.items() if 'modality' not in modality} # {modality: np.array(data)[ids] for modality, data in self.data_dict.items() if 'modality' not in modality}
+        #self.data = {modality: [data[i] for i in ids] for modality, data in self.data_dict.items() if 'modality' not in modality} # {modality: np.array(data)[ids] for modality, data in self.data_dict.items() if 'modality' not in modality}
+        self.data = {}
+        for modality in ['vision', 'audio', 'text']: ## 추후 수정
+            if modality in data_dict:
+                self.data[modality] = data_dict[modality][ids]
+            else:
+                self.data[modality] = None
         self.label = self.labels[ids]
         self.mc = self.mc[ids]
-        self.observed = self.observed[ids]
+        self.observed = observed_idx[ids]
+        
+        #Sort ids by the number of available modalities
+        self.sorted_ids = sorted(np.arange(len(ids)), key=lambda idx: sum([1 for modality in self.data if -2 not in self.data[modality][idx]]), reverse=True)
+        #self.data_new = {modality: data[self.sorted_ids] for modality, data in self.data.items()}
+        for modality,  in self.data:
+            if self.data[modality] is not None:
+                self.data[modality] = self.data[modality][self.sorted_ids]
+        self.label = self.label[self.sorted_ids]
+        self.mc = self.mc[self.sorted_ids]
+        self.observed = self.observed[self.sorted_ids]
 
     def __len__(self):
         return len(self.ids)
@@ -44,7 +60,11 @@ class MultiModalDataset(Dataset):
     def __getitem__(self, idx):
         sample_data = {}
         for modality, data in self.data.items():
-            sample_data[modality] = np.nan_to_num(data[idx])
+            if data is not None:
+                sample_data[modality] = data[idx]
+            else:
+                sample_data[modality] = None
+            #sample_data[modality] = np.nan_to_num(data[idx])
             if modality == 'image':
                 sample_data[modality] = process_2d_to_3d(data, idx, self.masks, self.transforms)
 
@@ -221,7 +241,7 @@ def load_and_preprocess_data_mosi(args):
                 update_modality_combinations(idx, 'T')
         encoder_dict['text'] = torch.nn.Sequential(GRU(768, 256, dropout=True, has_padding=False, batch_first=True, last_only=True).cuda(),
                                                    PatchEmbeddings(256, args.num_patches, args.hidden_dim).cuda())
-        ## 300에서 계속 에러남
+        ## 300에서 계속 에러남 -> dimension 768로 수정
         input_dims['text'] = arr[0].shape[1]
    
     combination_to_index = get_modality_combinations(args.modality) # 0: full modality index

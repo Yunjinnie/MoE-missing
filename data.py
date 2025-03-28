@@ -27,13 +27,7 @@ class MultiModalDataset(Dataset):
         self.label = self.labels[ids]
         self.mc = self.mc[ids]
         self.observed = self.observed[ids]
-
-        # Sort ids by the number of available modalities
-        # self.sorted_ids = sorted(np.arange(len(ids)), key=lambda idx: sum([1 for modality in self.data_new if -2 not in self.data_new[modality][idx]]), reverse=True)
-        # self.data_new = {modality: data[self.sorted_ids] for modality, data in self.data_new.items()}
-        # self.label_new = self.label_new[self.sorted_ids]
-        # self.mc_new = self.mc_new[self.sorted_ids]
-        # self.observed_new = self.observed_new[self.sorted_ids]
+  
 
     def __len__(self):
         return len(self.ids)
